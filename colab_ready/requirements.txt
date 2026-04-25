@@ -1,0 +1,10 @@
+numpy
+pandas
+scikit-learn
+matplotlib
+tensorflow==2.17.0
+flask
+lightgbm
+xgboost
+joblib
+tabulate

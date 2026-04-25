@@ -1,0 +1,41 @@
+Project Structure
+
+code/
+  models/
+    baseline_lstm/
+      model.py
+      run.py
+    attention_lstm/
+      model.py
+      run.py
+    analysis/
+      correlation_heatmap.py
+      run.py
+    testing/
+      test_model.py
+      run.py
+    residual_hybrid/
+      model.py
+      run.py
+    agent/
+      ghi_improvement_agent.py
+  outputs/
+    plots/
+    reports/
+    artifacts/
+
+Compatibility entry points kept in root:
+  lstm_model.py
+  attention_lstm_model.py
+  correlation_heatmap.py
+  test_model.py
+  ghi_improvement_agent.py
+  residual_hybrid_model.py
+
+Run examples:
+  python models\baseline_lstm\run.py --data-path .\dataset --no-plot
+  python models\attention_lstm\run.py --data-path .\dataset --no-plot
+  python models\analysis\run.py --data-path .\dataset --output outputs\plots\pearson_correlation_heatmap.png
+  python models\testing\run.py
+  python ghi_improvement_agent.py --data-path .\dataset --baseline-epochs 5 --attention-epochs 60 --batch-size 128
+  python residual_hybrid_model.py --data-path .\dataset --no-plot
