@@ -29,8 +29,54 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from tensorflow import keras
 
 ROOT = Path(__file__).resolve().parent
+REPO_ROOT = ROOT.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+
+def _outputs_roots() -> List[Path]:
+    # Colab often runs with cwd under .../colab_ready, but artifacts may be under repo-root outputs/.
+    candidates = [
+        ROOT / "outputs",
+        REPO_ROOT / "outputs",
+        ROOT / "colab_ready" / "outputs",
+        REPO_ROOT / "colab_ready" / "outputs",
+    ]
+    roots: List[Path] = []
+    for cand in candidates:
+        if cand not in roots:
+            roots.append(cand)
+    return roots
+
+
+def resolve_outputs_artifact(path: Path) -> Path:
+    if path.exists():
+        return path
+
+    parts = path.resolve().parts
+    if "outputs" not in parts:
+        return path
+
+    idx = parts.index("outputs")
+    rel = Path(*parts[idx + 1 :])
+    for root in _outputs_roots():
+        candidate = root / rel
+        if candidate.exists():
+            return candidate
+    return path
+
+
+def resolve_data_path(value: str) -> str:
+    p = Path(value)
+    if p.exists():
+        return str(p)
+
+    for cand in [ROOT / value, REPO_ROOT / value]:
+        if cand.exists():
+            return str(cand)
+
+    return value
+
 
 import models.baseline_lstm.model as baseline
 import models.agent.ghi_sprint_parallel as sprint_parallel
@@ -69,11 +115,19 @@ def _ensure_parent_dir(path: str | Path) -> None:
 
 
 def _resolve_existing_path(candidates: Sequence[str]) -> Path:
+    tried: List[str] = []
     for candidate in candidates:
-        path = Path(candidate)
-        if path.exists():
-            return path
-    raise FileNotFoundError(f"None of these artifacts exist: {', '.join(candidates)}")
+        raw = Path(candidate)
+        tried.append(str(raw))
+
+        resolved = resolve_outputs_artifact(raw)
+        if resolved.exists():
+            return resolved
+
+        if raw.exists():
+            return raw
+
+    raise FileNotFoundError(f"None of these artifacts exist: {', '.join(tried)}")
 
 
 def _load_model(model_path: Path) -> keras.Model:
@@ -671,6 +725,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    args.data_path = resolve_data_path(args.data_path)
+
     artifacts = ForecastComparisonArtifacts(
         predictions_csv=args.predictions_csv,
         metrics_csv=args.metrics_csv,
