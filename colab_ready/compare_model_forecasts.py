@@ -255,7 +255,14 @@ def _load_attention_predictions(
         peak_threshold_scaled=peak_threshold_scaled,
         peak_weight=2.0,
     )
-    model.load_weights(str(model_path))
+
+    # Local runs sometimes persist the attention artifact as a full SavedModel-in-H5.
+    # In that case, load_weights may fail; fall back to loading the full model.
+    try:
+        model.load_weights(str(model_path))
+    except Exception:
+        model = _load_model(model_path)
+
     pred_scaled = model.predict(bundle.X_test, batch_size=batch_size, verbose=0).reshape(-1)
 
     pred_raw = bundle.target_scaler.inverse_transform(pred_scaled.reshape(-1, 1)).reshape(-1)
@@ -688,6 +695,18 @@ def parse_args() -> argparse.Namespace:
         help="Path to the attention LSTM model artifact.",
     )
     parser.add_argument(
+        "--train-missing-attention",
+        action="store_true",
+        help="If the attention artifact is missing, train it from scratch using the project implementation.",
+    )
+    parser.add_argument("--attention-epochs", type=int, default=100, help="Epochs used when training missing attention artifact.")
+    parser.add_argument(
+        "--attention-learning-rate",
+        type=float,
+        default=1e-3,
+        help="Learning rate used when training missing attention artifact.",
+    )
+    parser.add_argument(
         "--hybrid-predictions-csv",
         type=str,
         default="outputs/reports/residual_hybrid_predictions.csv",
@@ -723,6 +742,62 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _as_root_relative(path: Path) -> Path:
+    return path if path.is_absolute() else (ROOT / path)
+
+
+def _train_attention_artifact(
+    *,
+    data_path: str,
+    save_path: Path,
+    sequence_length: int,
+    train_ratio: float,
+    val_ratio: float,
+    batch_size: int,
+    epochs: int,
+    learning_rate: float,
+) -> Path:
+    print(f"Training missing attention artifact -> {save_path}")
+    _ensure_parent_dir(save_path)
+
+    raw_df = baseline.build_feature_table(data_path)
+    bundle = baseline.build_sequences(
+        df=raw_df,
+        sequence_length=sequence_length,
+        train_ratio=train_ratio,
+        val_ratio=val_ratio,
+    )
+
+    peak_threshold_scaled = float(np.percentile(bundle.y_train.reshape(-1), 90))
+    model = sprint_parallel.build_attention_for_scaled_target(
+        sequence_length=sequence_length,
+        num_features=bundle.X_train.shape[-1],
+        learning_rate=learning_rate,
+        peak_threshold_scaled=peak_threshold_scaled,
+        peak_weight=2.0,
+    )
+
+    callbacks = [
+        keras.callbacks.EarlyStopping(monitor="val_loss", patience=10, restore_best_weights=True, verbose=1),
+        keras.callbacks.ReduceLROnPlateau(monitor="val_loss", factor=0.5, patience=5, min_lr=1e-5, verbose=1),
+    ]
+
+    model.fit(
+        bundle.X_train,
+        bundle.y_train,
+        validation_data=(bundle.X_val, bundle.y_val),
+        epochs=epochs,
+        batch_size=batch_size,
+        shuffle=True,
+        callbacks=callbacks,
+        verbose=1,
+    )
+
+    model.save(save_path)
+    print(f"Saved attention artifact: {save_path}")
+    return save_path
+
+
 def main() -> None:
     args = parse_args()
     args.data_path = resolve_data_path(args.data_path)
@@ -746,12 +821,28 @@ def main() -> None:
             "outputs/artifacts/task_d_baseline_original_huber.h5",
         ]
     )
-    attention_model_path = _resolve_existing_path(
-        [
-            args.attention_model_path,
-            "outputs/artifacts/attention_lstm_50epochs.h5",
-        ]
-    )
+
+    try:
+        attention_model_path = _resolve_existing_path(
+            [
+                args.attention_model_path,
+                "outputs/artifacts/attention_lstm_50epochs.h5",
+            ]
+        )
+    except FileNotFoundError:
+        if not args.train_missing_attention:
+            raise
+        target = _as_root_relative(Path(args.attention_model_path))
+        attention_model_path = _train_attention_artifact(
+            data_path=args.data_path,
+            save_path=target,
+            sequence_length=args.attention_sequence_length,
+            train_ratio=args.train_ratio,
+            val_ratio=args.val_ratio,
+            batch_size=args.batch_size,
+            epochs=args.attention_epochs,
+            learning_rate=args.attention_learning_rate,
+        )
 
     if args.focus_date is not None:
         pd.to_datetime(args.focus_date)

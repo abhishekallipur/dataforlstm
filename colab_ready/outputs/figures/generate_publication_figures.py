@@ -51,6 +51,9 @@ BENCHMARK_REPORTS_DIR = OUTPUTS_DIR / "benchmark" / "reports"
 BENCHMARK_PREDICTIONS_DIR = OUTPUTS_DIR / "benchmark" / "predictions"
 FIGURES_DIR = OUTPUTS_DIR / "figures"
 DATASET_DIR = BASE_DIR / "dataset"
+if not DATASET_DIR.exists() and (BASE_DIR.parent / "dataset").exists():
+    DATASET_DIR = BASE_DIR.parent / "dataset"
+
 FIGURES_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -261,7 +264,10 @@ def load_forecast_summary() -> dict:
 
 
 def load_attention_history() -> dict:
-    history = load_json(REPORTS_DIR / "attention_training_history.json")
+    try:
+        history = load_json(REPORTS_DIR / "attention_training_history.json")
+    except FileNotFoundError:
+        return {}
     return history.get("fit_history", history)
 
 
@@ -696,7 +702,7 @@ def fig6_feature_importance() -> None:
 def fig7_attention_weights() -> None:
     history = load_attention_history()
     bundle, attention_module = load_attention_bundle(sequence_length=24)
-    _, extractor, model_path, load_error = load_attention_extractor(bundle, attention_module)
+    model, extractor, model_path, load_error = load_attention_extractor(bundle, attention_module)
 
     fig, (ax_weights, ax_history) = plt.subplots(1, 2, figsize=(18, 6), constrained_layout=True)
 
@@ -705,7 +711,33 @@ def fig7_attention_weights() -> None:
     sample_input = bundle.X_test[sample_idx : sample_idx + 1]
 
     if extractor is not None:
-        attention_weights = extractor.predict(sample_input, verbose=0)
+        try:
+            attention_weights = extractor.predict(sample_input, verbose=0)
+        except Exception:
+            # Fallback: the available attention artifact may have been trained on the baseline feature bundle.
+            from models.baseline_lstm import model as baseline_module
+
+            expected_steps = int(model.input_shape[1]) if model is not None and model.input_shape[1] is not None else 24
+            expected_features = int(model.input_shape[2]) if model is not None and model.input_shape[2] is not None else None
+
+            raw_df = baseline_module.build_feature_table(str(DATASET_DIR))
+            base_bundle = baseline_module.build_sequences(
+                df=raw_df,
+                sequence_length=expected_steps,
+                train_ratio=0.7,
+                val_ratio=0.15,
+            )
+
+            if expected_features is not None and base_bundle.X_test.shape[-1] != expected_features:
+                raise RuntimeError(
+                    f"Attention model expects {expected_features} features but baseline bundle has {base_bundle.X_test.shape[-1]}."
+                )
+
+            sample_idx = int(np.argmax(base_bundle.y_test_raw))
+            sample_ts = pd.Timestamp(base_bundle.test_timestamps[sample_idx])
+            sample_input = base_bundle.X_test[sample_idx : sample_idx + 1]
+            attention_weights = extractor.predict(sample_input, verbose=0)
+
         weights = attention_weights[0, :, 0]
         steps = np.arange(1, len(weights) + 1)
         ax_weights.plot(steps, weights, marker="o", color="#ff7f0e", linewidth=2.0)
