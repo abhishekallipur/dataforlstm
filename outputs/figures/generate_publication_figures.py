@@ -87,7 +87,43 @@ def _relative_path(path: Path) -> str:
     return str(path.relative_to(BASE_DIR))
 
 
+def _outputs_roots() -> List[Path]:
+    """Return possible outputs/ roots used across local runs vs Colab (repo-root vs colab_ready)."""
+    candidates = [
+        OUTPUTS_DIR,
+        BASE_DIR.parent / "outputs",
+        BASE_DIR / "colab_ready" / "outputs",
+        BASE_DIR.parent / "colab_ready" / "outputs",
+    ]
+    roots: List[Path] = []
+    for cand in candidates:
+        if cand not in roots:
+            roots.append(cand)
+    return roots
+
+
+def resolve_outputs_artifact(path: Path) -> Path:
+    """Resolve an artifact under outputs/ even if BASE_DIR differs (common in Colab)."""
+    if path.exists():
+        return path
+
+    parts = path.resolve().parts
+    if "outputs" not in parts:
+        return path
+
+    idx = parts.index("outputs")
+    rel = Path(*parts[idx + 1 :])
+
+    for root in _outputs_roots():
+        candidate = root / rel
+        if candidate.exists():
+            return candidate
+
+    return path
+
+
 def load_json(path: Path) -> dict:
+    path = resolve_outputs_artifact(path)
     if not path.exists():
         raise FileNotFoundError(f"Missing required JSON file: {path}")
     with path.open("r", encoding="utf-8") as handle:
@@ -95,6 +131,7 @@ def load_json(path: Path) -> dict:
 
 
 def load_csv(path: Path, parse_dates: Sequence[str] | None = None) -> pd.DataFrame:
+    path = resolve_outputs_artifact(path)
     if not path.exists():
         raise FileNotFoundError(f"Missing required CSV file: {path}")
     return pd.read_csv(path, parse_dates=list(parse_dates) if parse_dates else None)
@@ -229,7 +266,7 @@ def load_attention_history() -> dict:
 
 
 def load_v2_validity_report() -> Tuple[Dict[str, Dict[str, float]], pd.DataFrame]:
-    report_path = BENCHMARK_REPORTS_DIR / "v2_validity_report.md"
+    report_path = resolve_outputs_artifact(BENCHMARK_REPORTS_DIR / "v2_validity_report.md")
     if not report_path.exists():
         raise FileNotFoundError(f"Missing required report: {report_path}")
 
@@ -275,8 +312,8 @@ def load_attention_extractor(bundle, attention_module):
     import tensorflow as tf
 
     model_candidates = [
-        OUTPUTS_DIR / "artifacts" / "task_b_attention_lstm_trained.h5",
-        OUTPUTS_DIR / "artifacts" / "attention_lstm_50epochs.h5",
+        resolve_outputs_artifact(OUTPUTS_DIR / "artifacts" / "task_b_attention_lstm_trained.h5"),
+        resolve_outputs_artifact(OUTPUTS_DIR / "artifacts" / "attention_lstm_50epochs.h5"),
     ]
 
     custom_objects = {"_identity": attention_module._identity}
